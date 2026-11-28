@@ -1,172 +1,199 @@
 """
-test_tools.py - Offline Unit Tests for OrderPilot
+test_tools.py - Offline Unit Tests for TicketPilot & Week 1 OrderPilot Tools
 
-All tests in this file run 100% offline without requiring API keys or network access.
-Gemini API calls are fully mocked to ensure fast, deterministic CI/CD execution.
-
-Test Cases:
-- Test 1: Valid order ID lookup (ORD-101, A123, case-insensitivity).
-- Test 2: Unknown order ID handling (graceful error response).
-- Test 3: Invalid or empty order ID validation (None, numbers, blanks).
-- Test 4: Multiple independent order lookups.
-- Test 5: Gemini tool-calling integration (mocked end-to-end loop).
+Covers:
+- Test A: Valid order lookup (including Week 1 compatibility).
+- Test B: Unknown order lookup.
+- Test C: Billing category classification.
+- Test D: Shipping category classification.
+- Test E: Bug category classification.
+- Test F: Refund eligibility for a delivered order within 30 days.
+- Test G: Refund eligibility for a shipped order.
+- Test H: Unknown order refund check.
+- Additional: Other/empty classification, overlapping keyword precedence,
+  expired (>30 days) delivery, cancelled order, and simulated escalation.
 """
 
-import sys
 import os
+import sys
 import unittest
-from unittest.mock import MagicMock
 
-# Ensure parent directory is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from database import ORDERS
-from tools import TOOL_REGISTRY, lookup_order_status, lookup_order_status_declaration
-from main import execute_tool_call, process_user_query
+from tools import (
+    TOOL_REGISTRY,
+    check_refund_eligibility,
+    classify_ticket_category,
+    escalate_to_human,
+    get_escalation_count,
+    lookup_order_status,
+    reset_escalation_log,
+)
 
 
-class TestOrderPilot(unittest.TestCase):
-    """Offline unit test suite for OrderPilot."""
+class TestTicketPilotTools(unittest.TestCase):
+    """Deterministic, 100% offline unit tests for all TicketPilot Python tools."""
 
-    # -----------------------------------------------------------------------
-    # TEST 1: Valid Order ID
-    # -----------------------------------------------------------------------
-    def test_1_valid_order_id(self):
-        """Verify valid order IDs return accurate, structured order data."""
-        res_101 = lookup_order_status("ORD-101")
-        self.assertTrue(res_101["found"])
-        self.assertEqual(res_101["order_id"], "ORD-101")
-        self.assertEqual(res_101["customer_name"], "Alice Johnson")
-        self.assertEqual(res_101["product"], "Wireless Noise-Canceling Headphones")
-        self.assertEqual(res_101["status"], "Shipped")
-        self.assertEqual(res_101["delivery_date"], "Tomorrow by 2:00 PM")
-
-        # Test case-insensitivity and whitespace handling
-        res_lower = lookup_order_status("ord-101")
-        self.assertTrue(res_lower["found"])
-        self.assertEqual(res_lower["order_id"], "ORD-101")
-
-        res_spaces = lookup_order_status("   A123   ")
-        self.assertTrue(res_spaces["found"])
-        self.assertEqual(res_spaces["status"], "Shipped")
+    def setUp(self):
+        reset_escalation_log()
 
     # -----------------------------------------------------------------------
-    # TEST 2: Unknown Order ID
+    # Test A: Valid Order Lookup
     # -----------------------------------------------------------------------
-    def test_2_unknown_order_id(self):
-        """Verify unknown order IDs return a structured not-found response without crashing."""
-        result = lookup_order_status("XYZ999")
-        self.assertFalse(result["found"])
-        self.assertEqual(result["order_id"], "XYZ999")
-        self.assertIn("message", result)
-        self.assertIn("not found", result["message"].lower())
+    def test_a_valid_order_lookup(self):
+        res = lookup_order_status("ORD-101")
+        self.assertTrue(res["found"])
+        self.assertEqual(res["order_id"], "ORD-101")
+        self.assertEqual(res["customer_name"], "Alice Johnson")
+        self.assertEqual(res["product"], "Wireless Noise-Canceling Headphones")
+        self.assertEqual(res["status"], "Shipped")
+        self.assertEqual(res["delivery_date"], "Tomorrow by 2:00 PM")
 
-    # -----------------------------------------------------------------------
-    # TEST 3: Invalid or Empty Order ID
-    # -----------------------------------------------------------------------
-    def test_3_invalid_or_empty_order_id(self):
-        """Verify empty strings, blanks, and non-string inputs are properly validated."""
-        res_empty = lookup_order_status("")
-        self.assertFalse(res_empty["found"])
-        self.assertIn("cannot be empty", res_empty["message"].lower())
-
-        res_blank = lookup_order_status("     ")
-        self.assertFalse(res_blank["found"])
-        self.assertIn("cannot be empty", res_blank["message"].lower())
-
-        res_none = lookup_order_status(None)  # type: ignore[arg-type]
-        self.assertFalse(res_none["found"])
-        self.assertIn("expected a string", res_none["message"].lower())
-
-        res_int = lookup_order_status(98765)  # type: ignore[arg-type]
-        self.assertFalse(res_int["found"])
-        self.assertIn("expected a string", res_int["message"].lower())
+        # Case-insensitive + Week 1 backward compatibility
+        res_w1 = lookup_order_status("  a123  ")
+        self.assertTrue(res_w1["found"])
+        self.assertEqual(res_w1["order_id"], "A123")
+        self.assertEqual(res_w1["status"], "Shipped")
 
     # -----------------------------------------------------------------------
-    # TEST 4: Multiple Independent Order Lookups
+    # Test B: Unknown Order Lookup
     # -----------------------------------------------------------------------
-    def test_4_multiple_order_lookups(self):
-        """Verify multiple consecutive lookups return independent, correct records."""
-        test_ids = ["ORD-101", "ORD-102", "ORD-103", "ORD-104", "ORD-105"]
-        expected_statuses = {
-            "ORD-101": "Shipped",
-            "ORD-102": "Processing",
-            "ORD-103": "Delivered",
-            "ORD-104": "Out for delivery",
-            "ORD-105": "Cancelled",
-        }
+    def test_b_unknown_order_lookup(self):
+        res = lookup_order_status("XYZ999")
+        self.assertFalse(res["found"])
+        self.assertEqual(res["order_id"], "XYZ999")
+        self.assertIn("not found", res["message"].lower())
 
-        for order_id in test_ids:
-            res = lookup_order_status(order_id)
-            self.assertTrue(res["found"])
-            self.assertEqual(res["status"], expected_statuses[order_id])
-            self.assertEqual(res["order_id"], order_id)
+        # Invalid/empty order ID validation
+        self.assertFalse(lookup_order_status("")["found"])
+        self.assertFalse(lookup_order_status("   ")["found"])
+        self.assertFalse(lookup_order_status(None)["found"])  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------
-    # TEST 5: Mocked Gemini Tool-Calling Integration
+    # Test C: Billing Category Classification
     # -----------------------------------------------------------------------
-    def test_5_gemini_tool_calling_integration_mocked(self):
-        """Verify end-to-end loop: model requests tool, Python executes, model responds."""
-        mock_client = MagicMock()
-
-        # Create a mock FunctionCall object
-        mock_call = MagicMock()
-        mock_call.name = "lookup_order_status"
-        mock_call.args = {"order_id": "ORD-101"}
-
-        # Candidate content for model's turn
-        mock_candidate_content = MagicMock()
-
-        # Turn 1 Response: Gemini decides to invoke lookup_order_status
-        turn_1_resp = MagicMock()
-        turn_1_resp.function_calls = [mock_call]
-        turn_1_resp.candidates = [MagicMock(content=mock_candidate_content)]
-        turn_1_resp.text = None
-
-        # Turn 2 Response: Gemini produces the final natural-language response
-        turn_2_resp = MagicMock()
-        turn_2_resp.function_calls = None
-        turn_2_resp.text = (
-            "Your order ORD-101 for Alice Johnson (Wireless Noise-Canceling Headphones) "
-            "is Shipped and will arrive Tomorrow by 2:00 PM."
+    def test_c_billing_category_classification(self):
+        res = classify_ticket_category(
+            "Duplicate charge on my card. I was charged twice for the transaction on my invoice."
         )
+        self.assertEqual(res["category"], "billing")
+        self.assertIn("billing", res["matched_keywords"])
 
-        # Configure client mock to return turn 1 then turn 2
-        mock_client.models.generate_content.side_effect = [turn_1_resp, turn_2_resp]
-
-        user_query = "What is the status of order ORD-101?"
-        final_answer = process_user_query(
-            user_query=user_query,
-            client=mock_client,
-            model_name="gemini-3.5-flash",
-            verbose=False,
+    # -----------------------------------------------------------------------
+    # Test D: Shipping Category Classification
+    # -----------------------------------------------------------------------
+    def test_d_shipping_category_classification(self):
+        res = classify_ticket_category(
+            "Order delayed in transit. The courier tracking shows a missing package."
         )
+        self.assertEqual(res["category"], "shipping")
+        self.assertIn("shipping", res["matched_keywords"])
 
-        # Verify final answer matches turn 2 response
-        self.assertEqual(final_answer, turn_2_resp.text)
+    # -----------------------------------------------------------------------
+    # Test E: Bug Category Classification
+    # -----------------------------------------------------------------------
+    def test_e_bug_category_classification(self):
+        res = classify_ticket_category(
+            "Mobile app crashes with a fatal error and login failure when opening checkout."
+        )
+        self.assertEqual(res["category"], "bug")
+        self.assertIn("bug", res["matched_keywords"])
 
-        # Verify generate_content was called exactly twice (prompt + tool result)
-        self.assertEqual(mock_client.models.generate_content.call_count, 2)
+    def test_other_and_overlapping_keyword_precedence(self):
+        # No matching keywords -> 'other'
+        res_other = classify_ticket_category("Do you offer gift wrapping next month?")
+        self.assertEqual(res_other["category"], "other")
 
-    def test_execute_tool_call_safety(self):
-        """Verify execute_tool_call guards against unregistered tool execution."""
-        mock_bad_call = MagicMock()
-        mock_bad_call.name = "unregistered_dangerous_func"
-        mock_bad_call.args = {}
+        # Empty / invalid text -> 'other'
+        self.assertEqual(classify_ticket_category("")["category"], "other")
+        self.assertEqual(classify_ticket_category(None)["category"], "other")  # type: ignore[arg-type]
 
-        result = execute_tool_call(mock_bad_call)
-        self.assertFalse(result["found"])
-        self.assertIn("error", result)
-        self.assertIn("Unknown tool", result["error"])
+        # Overlapping tie (1 billing term 'charged' vs 1 shipping term 'delivery')
+        # Precedence: billing > shipping > bug
+        res_tie = classify_ticket_category("I was charged extra for delivery.")
+        self.assertEqual(res_tie["category"], "billing")
+        self.assertIn("precedence", res_tie["reason"].lower())
 
-    def test_schema_and_registry(self):
-        """Verify function declaration schema matches registration specifications."""
-        self.assertEqual(lookup_order_status_declaration.name, "lookup_order_status")
-        params = lookup_order_status_declaration.parameters_json_schema
-        self.assertIsNotNone(params)
-        self.assertIn("order_id", params["properties"])
-        self.assertIn("order_id", params["required"])
-        self.assertIn("lookup_order_status", TOOL_REGISTRY)
+    # -----------------------------------------------------------------------
+    # Test F: Refund Eligibility for Delivered Order Within 30 Days
+    # -----------------------------------------------------------------------
+    def test_f_refund_eligibility_delivered_within_30_days(self):
+        # ORD-103 was delivered 2026-11-25; simulated today is 2026-11-28 (3 days ago)
+        res = check_refund_eligibility("ORD-103", current_date="2026-11-28")
+        self.assertTrue(res["found"])
+        self.assertTrue(res["eligible"])
+        self.assertFalse(res["requires_human_review"])
+        self.assertFalse(res["refund_issued"])
+        self.assertEqual(res["policy_rule"], "delivered_within_30_days")
+
+    def test_refund_eligibility_delivered_outside_30_days_and_cancelled(self):
+        # ORD-107 delivered 2026-10-10 (49 days before 2026-11-28) -> ineligible
+        res_old = check_refund_eligibility("ORD-107", current_date="2026-11-28")
+        self.assertTrue(res_old["found"])
+        self.assertFalse(res_old["eligible"])
+        self.assertEqual(res_old["policy_rule"], "delivered_outside_30_days")
+
+        # ORD-105 Cancelled -> eligible
+        res_cancelled = check_refund_eligibility("ORD-105")
+        self.assertTrue(res_cancelled["found"])
+        self.assertTrue(res_cancelled["eligible"])
+        self.assertFalse(res_cancelled["refund_issued"])
+        self.assertEqual(res_cancelled["policy_rule"], "cancelled_order")
+
+    # -----------------------------------------------------------------------
+    # Test G: Refund Eligibility for Shipped (and Processing) Order
+    # -----------------------------------------------------------------------
+    def test_g_refund_eligibility_shipped_order(self):
+        res = check_refund_eligibility("ORD-101")
+        self.assertTrue(res["found"])
+        self.assertFalse(res["eligible"])
+        self.assertTrue(res["requires_human_review"])
+        self.assertFalse(res["refund_issued"])
+        self.assertEqual(res["policy_rule"], "in_progress_requires_review")
+
+        res_proc = check_refund_eligibility("ORD-102")
+        self.assertFalse(res_proc["eligible"])
+        self.assertTrue(res_proc["requires_human_review"])
+
+    # -----------------------------------------------------------------------
+    # Test H: Unknown Order Refund Check
+    # -----------------------------------------------------------------------
+    def test_h_unknown_order_refund_check(self):
+        res = check_refund_eligibility("ORD-999")
+        self.assertFalse(res["found"])
+        self.assertFalse(res["eligible"])
+        self.assertFalse(res["refund_issued"])
+        self.assertEqual(res["policy_rule"], "unknown_order")
+
+        res_empty = check_refund_eligibility("")
+        self.assertFalse(res_empty["eligible"])
+        self.assertEqual(res_empty["policy_rule"], "invalid_order_id")
+
+    # -----------------------------------------------------------------------
+    # Optional Stretch Goal: Simulated Escalation Tool
+    # -----------------------------------------------------------------------
+    def test_escalate_to_human_tool(self):
+        self.assertEqual(get_escalation_count(), 0)
+        res = escalate_to_human("Suspected unauthorized transaction on ORD-999", ticket_id="T012")
+        self.assertTrue(res["escalated"])
+        self.assertTrue(res["simulated"])
+        self.assertEqual(res["ticket_id"], "T012")
+        self.assertEqual(get_escalation_count(), 1)
+        self.assertIn("no live human notification", res["note"].lower())
+
+        # Empty reason rejected
+        bad = escalate_to_human("   ")
+        self.assertFalse(bad["escalated"])
+        self.assertEqual(get_escalation_count(), 1)
+
+    def test_tool_registry_completeness(self):
+        for name in (
+            "lookup_order_status",
+            "classify_ticket_category",
+            "check_refund_eligibility",
+            "escalate_to_human",
+        ):
+            self.assertIn(name, TOOL_REGISTRY)
 
 
 if __name__ == "__main__":

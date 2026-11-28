@@ -1,32 +1,33 @@
 """
-main.py - OrderPilot: AI Order-Support Agent with Tool Calling
+main.py - TicketPilot & OrderPilot CLI Entry Point
 
-This module implements:
-1. Secure API key loading using python-dotenv.
-2. Configuration of the official Google Gen AI SDK client.
-3. The complete manual tool-calling loop with Gemini function calling.
-4. Robust error handling for unknown tools, invalid parameters, rate limits (429), and API issues.
-5. An interactive terminal UI displaying AI analysis, tool calls, and results.
+Provides:
+1. Week 2 TicketPilot Batch Triage (`python main.py`):
+   Reads all support tickets from `tickets.json`, runs the multi-round Gemini
+   tool-calling agent, prints per-ticket execution details, and outputs a summary.
+2. Preserved Week 1 OrderPilot Modes:
+   - Interactive order-support chat: `python main.py --interactive`
+   - Single order query: `python main.py --query "What's the status of order A123?"`
 """
 
+import argparse
+from collections import Counter
 import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
-from dotenv import load_dotenv
+from typing import Any, Dict, List
 from google import genai
 from google.genai import errors, types
 
-from tools import ORDER_TOOL, TOOL_REGISTRY
+from agent import MAX_TOOL_ROUNDS, _call_gemini_with_retry, load_gemini_client, triage_ticket
+from tools import ORDER_TOOL, TOOL_REGISTRY, get_escalation_count, reset_escalation_log
 
 
 # ---------------------------------------------------------------------------
-# 1. Configuration and Client Initialization
+# Preserved Week 1 OrderPilot Functionality
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-3.5-flash"
-
-SYSTEM_INSTRUCTION = (
+WEEK1_SYSTEM_INSTRUCTION = (
     "You are OrderPilot, an AI order-support assistant for an e-commerce platform.\n"
     "Your responsibilities:\n"
     "1. When a user inquires about an order's status, delivery date, or shipping, "
@@ -40,103 +41,32 @@ SYSTEM_INSTRUCTION = (
 )
 
 
-def load_gemini_client() -> tuple[genai.Client, str]:
-    """Load configuration from environment and initialize the Google Gen AI client.
-
-    Returns:
-        tuple[genai.Client, str]: Initialized client and the selected model name.
-
-    Raises:
-        ValueError: If GEMINI_API_KEY is not found or empty.
-    """
-    load_dotenv()
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or not api_key.strip():
-        raise ValueError(
-            "ERROR: GEMINI_API_KEY not found in environment or .env file.\n"
-            "Please create a .env file and set GEMINI_API_KEY=your_key.\n"
-            "See .env.example for guidance."
-        )
-
-    model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip()
-
-    # Note: Function calling requires the v1beta API version in google-genai
-    client = genai.Client(
-        api_key=api_key,
-        http_options={"api_version": "v1beta"}
-    )
-    return client, model_name
-
-
-# ---------------------------------------------------------------------------
-# 2. Tool Execution Logic
-# ---------------------------------------------------------------------------
 def execute_tool_call(call: types.FunctionCall) -> Dict[str, Any]:
-    """Match and execute a model-requested function against the explicit tool registry.
-
-    Args:
-        call: The FunctionCall object containing name and arguments.
-
-    Returns:
-        Dict[str, Any]: Structured execution output from the Python function.
-    """
+    """Week 1 helper: Match and execute a model-requested function against TOOL_REGISTRY."""
     func_name = call.name
     raw_args = call.args or {}
 
-    # Guard against arbitrary execution: only call registered functions
     if func_name not in TOOL_REGISTRY:
         return {
             "found": False,
-            "error": f"Unknown tool '{func_name}'. Not in registered tools."
+            "error": f"Unknown tool '{func_name}'. Not in registered tools.",
         }
 
     target_func = TOOL_REGISTRY[func_name]
 
     try:
-        # Convert args mapping to a standard python dict
         clean_args = {k: v for k, v in raw_args.items()}
-        result = target_func(**clean_args)
-        return result
+        return target_func(**clean_args)
     except TypeError as te:
         return {
             "found": False,
-            "error": f"Invalid arguments supplied for '{func_name}': {str(te)}"
+            "error": f"Invalid arguments supplied for '{func_name}': {str(te)}",
         }
     except Exception as exc:
         return {
             "found": False,
-            "error": f"Unexpected error during execution of '{func_name}': {str(exc)}"
+            "error": f"Unexpected error during execution of '{func_name}': {str(exc)}",
         }
-
-
-# ---------------------------------------------------------------------------
-# 3. The Complete Tool-Calling Loop
-# ---------------------------------------------------------------------------
-def _call_gemini_with_retry(
-    client: genai.Client,
-    model_name: str,
-    contents: List[Any],
-    config: types.GenerateContentConfig,
-    max_retries: int = 3,
-    verbose: bool = True,
-) -> Any:
-    """Invoke generate_content with automatic retry on 429 rate limit errors."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            return client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
-            )
-        except errors.APIError as api_err:
-            if api_err.code == 429 and attempt < max_retries:
-                wait_time = 20 * attempt
-                if verbose:
-                    print(f"\n[RATE LIMIT] Rate limit reached. Waiting {wait_time}s before retry {attempt}/{max_retries}...")
-                time.sleep(wait_time)
-                continue
-            raise
 
 
 def process_user_query(
@@ -146,36 +76,16 @@ def process_user_query(
     max_iterations: int = 5,
     verbose: bool = True,
 ) -> str:
-    """Run the complete Gemini function-calling loop for a given user query.
-
-    Workflow:
-    1. Send user message with registered tool schemas.
-    2. Inspect model response for function_calls.
-    3. If function calls are detected, execute them from TOOL_REGISTRY.
-    4. Send function responses back to Gemini.
-    5. Repeat until Gemini returns a final natural-language response.
-
-    Args:
-        user_query: The customer's message.
-        client: The configured GenAI client.
-        model_name: The Gemini model name.
-        max_iterations: Maximum loop iterations to prevent infinite loops.
-        verbose: If True, prints status and tool-execution details to terminal.
-
-    Returns:
-        str: Final natural-language response from Gemini.
-    """
+    """Week 1 helper: Run single-tool Gemini function-calling loop for a customer query."""
     if verbose:
         print("\n[AI] Analyzing your request...")
 
-    # Configure tool calling and system prompt
     config = types.GenerateContentConfig(
         tools=[ORDER_TOOL],
         temperature=0.0,
-        system_instruction=SYSTEM_INSTRUCTION,
+        system_instruction=WEEK1_SYSTEM_INSTRUCTION,
     )
 
-    # Conversation history contents
     contents: List[Any] = [
         types.Content(
             role="user",
@@ -183,7 +93,7 @@ def process_user_query(
         )
     ]
 
-    for iteration in range(1, max_iterations + 1):
+    for _ in range(1, max_iterations + 1):
         try:
             response = _call_gemini_with_retry(
                 client=client,
@@ -203,16 +113,13 @@ def process_user_query(
                 print(f"\n[ERROR] {error_msg}")
             return error_msg
 
-        # If the model produced no function calls, we have the final text answer
         if not response.function_calls:
             final_text = response.text or "I was unable to generate a response. Please try again."
             return final_text.strip()
 
-        # Append model's response candidate to the ongoing conversation contents
         if response.candidates and response.candidates[0].content:
             contents.append(response.candidates[0].content)
 
-        # Process each requested function call
         tool_response_parts: List[types.Part] = []
 
         for call in response.function_calls:
@@ -223,37 +130,27 @@ def process_user_query(
                 print(f"Function:  {call.name}")
                 print(f"Arguments: {json.dumps(call_args, indent=2)}")
 
-            # Execute the function
             tool_result = execute_tool_call(call)
 
             if verbose:
                 print("\n[TOOL EXECUTION]")
                 print(f"Result:    {json.dumps(tool_result, indent=2)}")
 
-            # Package the result using official SDK Part.from_function_response
             tool_part = types.Part.from_function_response(
                 name=call.name,
                 response=tool_result,
             )
             tool_response_parts.append(tool_part)
 
-        # Send tool response turn back to Gemini using role='user'
-        tool_content = types.Content(
-            role="user",
-            parts=tool_response_parts,
-        )
-        contents.append(tool_content)
+        contents.append(types.Content(role="user", parts=tool_response_parts))
 
     return "Reached maximum tool-call iterations without a final response."
 
 
-# ---------------------------------------------------------------------------
-# 4. Interactive Terminal CLI
-# ---------------------------------------------------------------------------
 def run_interactive_loop(client: genai.Client, model_name: str) -> None:
-    """Run an interactive session for the user in the terminal."""
+    """Week 1 interactive terminal CLI session."""
     print("=" * 65)
-    print("        ORDERPILOT — AI ORDER SUPPORT AGENT")
+    print("        ORDERPILOT — AI ORDER SUPPORT AGENT (WEEK 1 MODE)")
     print(f"        Active Model: {model_name}")
     print("=" * 65)
     print("Ask about any order status (e.g., 'What's the status of order A123?')")
@@ -285,30 +182,177 @@ def run_interactive_loop(client: genai.Client, model_name: str) -> None:
         print("-" * 65)
 
 
-def main() -> None:
-    """Entry point for OrderPilot."""
+# ---------------------------------------------------------------------------
+# Week 2 TicketPilot Batch Triage Runner
+# ---------------------------------------------------------------------------
+def load_tickets(tickets_path: str) -> List[Dict[str, Any]]:
+    """Load support tickets from JSON file."""
+    if not os.path.exists(tickets_path):
+        raise FileNotFoundError(f"Tickets file not found: {tickets_path}")
+
+    with open(tickets_path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    if not isinstance(data, list):
+        raise ValueError("tickets.json must contain a JSON array of ticket objects.")
+    return data
+
+
+def run_ticket_triage(
+    tickets_path: str = "tickets.json",
+    max_tool_rounds: int = MAX_TOOL_ROUNDS,
+    pace_seconds: float = 0.0,
+) -> int:
+    """Process all tickets in tickets.json and print per-ticket and summary reports."""
     try:
         client, model_name = load_gemini_client()
     except ValueError as err:
         print(f"\n[CONFIGURATION ERROR]\n{err}\n")
-        sys.exit(1)
+        return 1
 
-    # Allow passing a single question via CLI arguments for quick testing:
-    # e.g.: python main.py "What is the status of order A123?"
-    if len(sys.argv) > 1:
-        query = " ".join(sys.argv[1:])
-        print(f"Question: {query}")
-        final_answer = process_user_query(
-            user_query=query,
+    try:
+        tickets = load_tickets(tickets_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as err:
+        print(f"\n[DATA ERROR]\n{err}\n")
+        return 1
+
+    reset_escalation_log()
+
+    print("=" * 75)
+    print("           TICKETPILOT — MULTI-TOOL SUPPORT TRIAGE AGENT")
+    print(f"           Model: {model_name} | Max Tool Rounds: {max_tool_rounds}")
+    print(f"           Tickets Loaded: {len(tickets)}")
+    print("=" * 75)
+
+    success_count = 0
+    failed_count = 0
+    human_review_count = 0
+    tool_invocation_counts: Counter = Counter()
+
+    for idx, ticket in enumerate(tickets, start=1):
+        ticket_id = ticket.get("ticket_id", f"UNKNOWN-{idx}")
+        subject = ticket.get("subject", "(No Subject)")
+
+        print(f"\n{'-' * 75}")
+        print(f"[{idx}/{len(tickets)}] Ticket ID: {ticket_id} | Subject: {subject}")
+        print(f"{'-' * 75}")
+
+        result = triage_ticket(
+            ticket=ticket,
             client=client,
             model_name=model_name,
+            max_tool_rounds=max_tool_rounds,
             verbose=True,
         )
-        print("\n[FINAL ANSWER]")
-        print(final_answer)
+
+        # Count actual executed tool invocations
+        for entry in result.get("tool_results", []):
+            if entry.get("freshly_executed", True):
+                tool_invocation_counts[entry.get("tool", "unknown")] += 1
+
+        if result.get("requires_human_review"):
+            human_review_count += 1
+
+        if result.get("error"):
+            failed_count += 1
+        else:
+            success_count += 1
+
+        print("\n  [TRIAGE RESULT]")
+        print(f"  Ticket ID:             {result['ticket_id']}")
+        print(f"  Subject:               {result['subject']}")
+        print(f"  Selected Category:     {result['category']}")
+        print(f"  Tools Called:          {result['tools_called']}")
+        print(f"  Tool Rounds Executed:  {result['tool_rounds']}")
+        print(f"  Requires Human Review: {result['requires_human_review']}")
+        if result.get("error"):
+            print(f"  Error / Warning:       {result['error']}")
+        print(f"  Final Draft Reply:\n    {result['draft_reply']}")
+
+        if pace_seconds > 0 and idx < len(tickets):
+            time.sleep(pace_seconds)
+
+    escalation_count = get_escalation_count()
+
+    print("\n" + "=" * 75)
+    print("                     TICKETPILOT TRIAGE SUMMARY")
+    print("=" * 75)
+    print(f"Total Tickets Processed:   {len(tickets)}")
+    print(f"Successful Triage Count:   {success_count}")
+    print(f"Failed / Warned Count:     {failed_count}")
+    print(f"Human Review Required:     {human_review_count}")
+    print(f"Simulated Escalations:     {escalation_count}")
+    print("Tool Invocation Counts:")
+    if tool_invocation_counts:
+        for tool_name, count in sorted(tool_invocation_counts.items()):
+            print(f"  - {tool_name}: {count}")
     else:
-        run_interactive_loop(client, model_name)
+        print("  - (none)")
+    print("=" * 75)
+
+    return 0 if failed_count == 0 else 1
+
+
+def main() -> None:
+    """CLI entry point supporting Week 2 TicketPilot batch mode and Week 1 OrderPilot modes."""
+    parser = argparse.ArgumentParser(
+        description="TicketPilot — Multi-Tool AI Support Ticket Triage Agent (with Week 1 OrderPilot compatibility)"
+    )
+    parser.add_argument(
+        "--tickets",
+        default="tickets.json",
+        help="Path to JSON file of support tickets (default: tickets.json)",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=MAX_TOOL_ROUNDS,
+        help=f"Maximum tool-calling rounds per ticket (default: {MAX_TOOL_ROUNDS})",
+    )
+    parser.add_argument(
+        "--pace",
+        type=float,
+        default=0.0,
+        help="Optional pause in seconds between tickets to respect API rate limits.",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Launch Week 1 OrderPilot interactive chat session.",
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default=None,
+        help="Run a single Week 1 OrderPilot question from the command line.",
+    )
+
+    args = parser.parse_args()
+
+    if args.interactive or args.query:
+        try:
+            client, model_name = load_gemini_client()
+        except ValueError as err:
+            print(f"\n[CONFIGURATION ERROR]\n{err}\n")
+            sys.exit(1)
+
+        if args.query:
+            print(f"Question: {args.query}")
+            ans = process_user_query(args.query, client, model_name, verbose=True)
+            print("\n[FINAL ANSWER]")
+            print(ans)
+        else:
+            run_interactive_loop(client, model_name)
+        return
+
+    exit_code = run_ticket_triage(
+        tickets_path=args.tickets,
+        max_tool_rounds=args.max_rounds,
+        pace_seconds=args.pace,
+    )
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
     main()
+

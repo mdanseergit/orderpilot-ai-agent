@@ -1,0 +1,86 @@
+[
+  {
+    "ticket_id": "T001",
+    "subject": "Order delayed in transit",
+    "body": "I ordered a Smart Fitness Watch last week and the courier tracking has not moved in two days. When will my shipment arrive?",
+    "customer_email": "john.doe@example.com",
+    "order_id": "A123"
+  },
+  {
+    "ticket_id": "T002",
+    "subject": "Package marked delivered but missing",
+    "body": "My tracking says the monitor was delivered on November 25, but there is no package at my front door or with neighbors.",
+    "customer_email": "catherine.lee@example.com",
+    "order_id": "ORD-103"
+  },
+  {
+    "ticket_id": "T003",
+    "subject": "Refund for cancelled hub order",
+    "body": "My order ORD-105 was cancelled earlier this week. Please check if I am eligible for a refund back to my original payment method.",
+    "customer_email": "emma.watson@example.com",
+    "order_id": "ORD-105"
+  },
+  {
+    "ticket_id": "T004",
+    "subject": "Incorrect invoice amount billed",
+    "body": "I just checked my invoice for order ORD-102 and the transaction shows $20 more than the checkout total. Can you review this billing issue?",
+    "customer_email": "bob.smith@example.com",
+    "order_id": "ORD-102"
+  },
+  {
+    "ticket_id": "T005",
+    "subject": "Duplicate charge on my card",
+    "body": "I was charged twice for my 4K Ultra HD Webcam order ORD-106. Please investigate the duplicate payment transaction.",
+    "customer_email": "frank.harris@example.com",
+    "order_id": "ORD-106"
+  },
+  {
+    "ticket_id": "T006",
+    "subject": "Damaged product arrived broken",
+    "body": "The wireless mouse I received has a cracked shell and the scroll wheel is broken right out of the box. Can I get a refund?",
+    "customer_email": "michael.brown@example.com",
+    "order_id": "A125"
+  },
+  {
+    "ticket_id": "T007",
+    "subject": "Mobile app crashes at checkout",
+    "body": "Every time I try to apply a promo code in your mobile app, the application freezes and crashes immediately with a fatal error.",
+    "customer_email": "tech.user@example.com",
+    "order_id": null
+  },
+  {
+    "ticket_id": "T008",
+    "subject": "Cannot log in to account",
+    "body": "I keep getting a login failure and a 500 server error whenever I enter my password on the customer portal.",
+    "customer_email": "portal.guest@example.com",
+    "order_id": null
+  },
+  {
+    "ticket_id": "T009",
+    "subject": "Standing desk converter defect after a month",
+    "body": "The lift mechanism on my Standing Desk Converter has a hardware malfunction and stopped locking. Am I still eligible for a refund on order ORD-107?",
+    "customer_email": "grace.kim@example.com",
+    "order_id": "ORD-107"
+  },
+  {
+    "ticket_id": "T010",
+    "subject": "Gift wrapping and corporate bulk orders",
+    "body": "Hello! Do you offer custom gift wrapping or holiday discount codes for corporate team gifts next month?",
+    "customer_email": "events.team@example.com",
+    "order_id": null
+  },
+  {
+    "ticket_id": "T011",
+    "subject": "Refund eligibility before shipment arrives",
+    "body": "I changed my mind about the headphones in order ORD-101. Since it already shipped, am I eligible for an automatic refund right now?",
+    "customer_email": "alice.johnson@example.com",
+    "order_id": "ORD-101"
+  },
+  {
+    "ticket_id": "T012",
+    "subject": "Urgent unauthorized charge on unknown order",
+    "body": "I see a suspicious transaction for order ORD-999 that I never placed. Please escalate this immediately to a fraud specialist for review.",
+    "customer_email": "concerned.buyer@example.com",
+    "order_id": "ORD-999"
+  }
+]
